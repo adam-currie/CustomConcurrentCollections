@@ -24,7 +24,11 @@ namespace CustomConcurrentCollections {
                 tail = newNode;
                 return;
             }
-
+            
+            /*
+             * Using a secondary queue as a buffer that will be merged back in.
+             * Provides about 1.8x throughput compared to niave spinlock stuff.
+             */
             while (true) {
                 Node? cachedAltTail = Interlocked.CompareExchange(ref altTail, newNode, null);
                 if (cachedAltTail == null) {
@@ -57,15 +61,6 @@ namespace CustomConcurrentCollections {
                     Thread.Sleep(1);
                 }
             }
-            //DEBUG: just here as an alternative to alt queue to compare to naive implementation performance
-            //SpinWait spin = default;
-            //while(true) {
-            //    spin.SpinOnce(-1);
-            //    if (Interlocked.CompareExchange(ref tail.next, newNode, null) == null) {
-            //        tail = newNode;
-            //        return;
-            //    }
-            //}
         }
 
         public IEnumerator<T> GetEnumerator() {
