@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -15,6 +15,21 @@ namespace CustomConcurrentCollections {
 
         public ConcurrectHighVolumeEnqueueQueue() {
             head = tail = new Node();
+        }
+
+        public bool TryDequeue(out T item) {
+            while (true) {
+                Node cachedHead = head;
+                bool took = cachedHead.TryTake(out item);
+                if (cachedHead.next != null)
+                    Interlocked.CompareExchange(ref head, cachedHead.next, cachedHead);
+                if (took) {
+                    return true;
+                } else if (cachedHead.next == null) {
+                    //didnt take and no next to try
+                    return false;
+                }
+            }
         }
 
         public void Enqueue(T item) {
@@ -73,16 +88,44 @@ namespace CustomConcurrentCollections {
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
         private class Node {
-            internal readonly T value;
+            internal T value;
             internal volatile Node? next;
+            private int noValue = 0; //0 = false, 1 = true
+
+            internal bool HasValue {
+                get => noValue == 0;
+            }
+
+            /// <summary>
+            ///     Tries to take the value atomically.
+            /// </summary>
+            /// <returns>true if we took the value, false if it isnt there to take</returns>
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            internal bool TryTake(out T result) {
+                bool changed = 0 == Interlocked.CompareExchange(ref noValue, 1, 0);
+                if (changed) {
+                    result = value;
+#pragma warning disable CS8601
+                    value = default;
+#pragma warning restore CS8601
+                } else {
+#pragma warning disable CS8601
+                    result = default;
+#pragma warning restore CS8601
+                }
+                return changed;
+            }
 
             internal Node(T value) {
                 this.value = value;
             }
 
-#pragma warning disable CS8618 // Non-nullable field is uninitialized. Consider declaring as nullable.
-            internal Node() { } //only here for head
-#pragma warning restore CS8618 // Non-nullable field is uninitialized. Consider declaring as nullable.
+            internal Node() {
+                noValue = 1;
+#pragma warning disable CS8601
+                value = default;
+#pragma warning restore CS8601
+            }
         }
 
     }
