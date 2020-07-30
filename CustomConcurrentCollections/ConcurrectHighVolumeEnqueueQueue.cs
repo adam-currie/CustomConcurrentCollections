@@ -21,12 +21,19 @@ namespace CustomConcurrentCollections {
             while (true) {
                 Node cachedHead = head;
                 bool took = cachedHead.TryTake(out item);
+
+                /*
+                 * Trying this whether take succeeded or not because if we take from the tail
+                 * then we will return from this method without incrementing the head, so some other
+                 * dequeue operation will have to fix that.
+                 */
                 if (cachedHead.next != null)
                     Interlocked.CompareExchange(ref head, cachedHead.next, cachedHead);
+
                 if (took) {
                     return true;
                 } else if (cachedHead.next == null) {
-                    //didnt take and no next to try
+                    //didn't take and no next node to try
                     return false;
                 }
             }
@@ -99,8 +106,8 @@ namespace CustomConcurrentCollections {
             /// <summary>
             ///     Tries to take the value atomically.
             /// </summary>
-            /// <returns>true if we took the value, false if it isnt there to take</returns>
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            /// <returns>true if we took the value, false if it isn't there to take</returns>
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]//todo: make sure this is inlined
             internal bool TryTake(out T result) {
                 bool changed = 0 == Interlocked.CompareExchange(ref noValue, 1, 0);
                 if (changed) {
