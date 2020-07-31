@@ -20,33 +20,23 @@ namespace CustomConcurrentCollections {
         System.Collections.Generic.IReadOnlyList<T>, 
         System.Collections.IList where T : class {
 
-        private T[] _valueArr;
-        private bool[] _hasValueArr;//code depends on this always being grown before values array grows
-        private int theoreticalCapacity;//not actual capacity because arrays might not be updated yet
-        private int fullyAddedCount = 0;
-        private int nextIndex = 0;//can't reliably be used as a count because adders increment this BEFORE they actually add items
+        private volatile T[] valueArr;
+        private volatile bool[] hasValueArr;//code depends on this always being grown before values array grows
+        private volatile int theoreticalCapacity;//not actual capacity because arrays might not be updated yet
+        private volatile int fullyAddedCount = 0;
+        private volatile int nextIndex = 0;//can't reliably be used as a count because adders increment this BEFORE they actually add items
 
         public int Capacity
             //Only need to check value array and not has value array because has value array is updated first.
-            => VolatileValueArr.Length;
+            => valueArr.Length;
 
         public int Count 
-            => Volatile.Read(ref fullyAddedCount);
-
-        private T[] VolatileValueArr {
-            get => Volatile.Read(ref _valueArr);
-            set => Volatile.Write(ref _valueArr, value);
-        }
-
-        private bool[] VolatileHasValueArr {
-            get => Volatile.Read(ref _hasValueArr);
-            set => Volatile.Write(ref _hasValueArr, value);
-        }
+            => fullyAddedCount;
 
         public ConcurrentGrowOnlyList(int initialCapacity = 16) {
-            Volatile.Write(ref theoreticalCapacity, initialCapacity);
-            VolatileHasValueArr = new bool[initialCapacity];
-            VolatileValueArr = new T[initialCapacity];
+            theoreticalCapacity = initialCapacity;
+            hasValueArr = new bool[initialCapacity];
+            valueArr = new T[initialCapacity];
         }
 
         /// <summary>
@@ -67,15 +57,15 @@ namespace CustomConcurrentCollections {
 
             EnsureCapacity(index);
 
-            Volatile.Write(ref VolatileValueArr[index], item);
-            Volatile.Write(ref VolatileHasValueArr[index], true);
+            Volatile.Write(ref valueArr[index], item);
+            Volatile.Write(ref hasValueArr[index], true);
 
             //increment count as far as we can, giving up when needed to let previous adds do it
             while (
                 index == Interlocked.CompareExchange(ref fullyAddedCount, index + 1, index) &&
-                ++index < Volatile.Read(ref nextIndex) &&
+                ++index < nextIndex &&
                 index < Capacity &&
-                Volatile.Read(ref VolatileHasValueArr[index])
+                Volatile.Read(ref hasValueArr[index])
             ) ;
 
             return index;
@@ -85,9 +75,10 @@ namespace CustomConcurrentCollections {
         ///     Grows the capacity when needed, or waits for another thread to do it.
         /// </summary>
         /// <exception cref="OverflowException"></exception>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void EnsureCapacity(int index) {
             while (true) {
-                int cachedCapacity = Volatile.Read(ref theoreticalCapacity);
+                int cachedCapacity = theoreticalCapacity;
 
                 if (index < cachedCapacity) {
                     //Doesn't need to grow, just wait for other grow/grows.
@@ -123,8 +114,8 @@ namespace CustomConcurrentCollections {
                 T[] newArr = new T[newCapacity];
                 bool[] newHasValue = new bool[newCapacity];
                 //safe to cache the arrays here because we are the only thread that could change the ref
-                T[] oldArr = VolatileValueArr;
-                bool[] oldHasValue = VolatileHasValueArr;
+                T[] oldArr = valueArr;
+                bool[] oldHasValue = hasValueArr;
 
 
                 //copy values
@@ -139,8 +130,8 @@ namespace CustomConcurrentCollections {
                  * Need to assign has value array first because other code 
                  * assumes it will be set by the time the value array is set.
                  */
-                VolatileHasValueArr = newHasValue;
-                VolatileValueArr = newArr;
+                hasValueArr = newHasValue;
+                valueArr = newArr;
             }
 
             return growing;
@@ -171,7 +162,7 @@ namespace CustomConcurrentCollections {
             int i = from;
             int max = Math.Min(to, Count - 1);
             while (i <= max) {
-                yield return Volatile.Read(ref VolatileValueArr[i]);
+                yield return Volatile.Read(ref valueArr[i]);
                 i++;
             }
         }
@@ -182,7 +173,7 @@ namespace CustomConcurrentCollections {
         public bool Contains(T item) {
             //need to get the count first so it doesn't end up bigger than the array
             var cachedCount = Count;
-            var cachedValues = VolatileValueArr;
+            var cachedValues =valueArr;
 
             if (item == null) {
                 for (int i = 0; i < cachedCount; i++)
@@ -201,7 +192,7 @@ namespace CustomConcurrentCollections {
         public int IndexOf(T value) {
             //need to get the count first so it doesn't end up bigger than the array
             int cachedCount = Count;
-            var cachedValues = VolatileValueArr;
+            var cachedValues = valueArr;
 
             if (value == null) {
                 for (int i = 0; i < cachedCount; i++)
@@ -225,7 +216,7 @@ namespace CustomConcurrentCollections {
             int cachedCount = Count;
             if (cachedCount > array.Length - index) throw new ArgumentException("not enough space");
 
-            T[] cachedValues = VolatileValueArr;
+            T[] cachedValues = valueArr;
 
             for (int i = 0; i < cachedCount; i++) {
                 array[index + i] = Volatile.Read(ref cachedValues[i]);
@@ -235,7 +226,7 @@ namespace CustomConcurrentCollections {
         public T this[int index] { 
             get {
                 if (index >= Count) throw new ArgumentOutOfRangeException("index");
-                return Volatile.Read(ref VolatileValueArr[index]);
+                return Volatile.Read(ref valueArr[index]);
             }
             set {
                 /*
@@ -243,7 +234,7 @@ namespace CustomConcurrentCollections {
                  * so we don't update it before the add operation finishes
                  */
                 if (index >= Count) throw new ArgumentOutOfRangeException("index");
-                Volatile.Write(ref VolatileValueArr[index], value);
+                Volatile.Write(ref valueArr[index], value);
             }
         }
 
@@ -257,7 +248,7 @@ namespace CustomConcurrentCollections {
         /// <returns>The original value.</returns>
         public T CompareAndSwap(int index, T value, T comparand) {
             if (index >= Count) throw new IndexOutOfRangeException();
-            return Interlocked.CompareExchange(ref VolatileValueArr[index], value, comparand);
+            return Interlocked.CompareExchange(ref valueArr[index], value, comparand);
         }
 
         void ICollection<T>.Clear() {
